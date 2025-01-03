@@ -1,0 +1,13 @@
+{
+	"folders": [
+		{
+			"path": "mxchat_client"
+		},
+		{
+			"path": "mxchat_core"
+		},
+		{
+			"path": "mxchat_server"
+		}
+	]
+}

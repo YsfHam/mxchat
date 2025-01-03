@@ -4,12 +4,13 @@ mod chat_page;
 mod gui_utils;
 mod networking;
 mod notifications_handler;
+mod messenger;
 
 use app::ChatApp;
 use eframe::egui::ViewportBuilder;
 
-const WIDTH: f32 = 600.0;
-const HEIGHT: f32 = 400.0;
+const WIDTH: f32 = 900.0;
+const HEIGHT: f32 = 600.0;
 
 fn main() {
 

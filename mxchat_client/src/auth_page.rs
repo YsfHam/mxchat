@@ -126,6 +126,7 @@ impl RegistrationPage {
         }).inner;
 
         if result.is_some() {
+            self.clear();
             return result;
         }
 
@@ -185,6 +186,12 @@ impl RegistrationPage {
             })
             .map_err(|error_message| self.error_message = Some(error_message))
             .ok()
+    }
+
+    fn clear(&mut self) {
+        self.registration_data.username.clear();
+        self.registration_data.nickname.clear();
+        self.registration_data.password.clear();
     }
 
 }
@@ -250,6 +257,7 @@ impl LoginPage {
         }).inner;
 
         if result.is_some() {
+            self.clear();
             return result;
         }
 
@@ -285,6 +293,11 @@ impl LoginPage {
             })
             .map_err(|error_message| self.error_message = Some(error_message))
             .ok()
+    }
+
+    fn clear(&mut self) {
+        self.connect_data.username.clear();
+        self.connect_data.password.clear();
     }
 }
 

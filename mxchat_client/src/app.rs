@@ -16,12 +16,17 @@ impl ChatApp {
 
 impl eframe::App for ChatApp {
     fn update(&mut self, ctx: &eframe::egui::Context, _: &mut eframe::Frame) {
-        if let Some(chat_page) = &mut self.chat_page {
-            chat_page.show(ctx);
+        let logout = if let Some(chat_page) = &mut self.chat_page {
+            chat_page.show(ctx)
         }
         else {
             self.chat_page = self.auth_page.show(ctx)
             .map(|(socket, user)| ChatPage::new(socket, user));
+            false
+        };
+
+        if logout {
+            self.chat_page = None;
         }
 
     }

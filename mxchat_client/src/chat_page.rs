@@ -1,164 +1,39 @@
+mod contacts_panel;
+
 use std::{net::TcpStream, sync::Arc, thread};
 
+use contacts_panel::{ContactPanelEvent, ContactsPanel};
 use eframe::egui;
-use mxchat_core::{auth::User, io::BytesBuffer, messaging::Contact};
+use mxchat_core::{auth::User, io::BytesBuffer};
 
-use crate::{networking::{read_notification, read_notification_payload, send_request_contact_cmd}, notifications_handler::{ChatNotificationHandler, NotificationHandlerSignal, NotificationsQueue}};
+use crate::{messenger::{MessagingInstance, Messenger}, networking::{read_notification, read_notification_payload, send_request_contact_cmd}, notifications_handler::{ChatNotificationHandler, NotificationHandlerSignal, NotificationsQueue}};
 
 #[derive(Eq, PartialEq)]
-enum JobStatus {
+pub enum JobStatus {
     Idle,
     InProgress,
     Failed(String),
 }
 
 #[derive(Clone, Copy)]
-enum ShowMainContentSignal {
+pub enum ShowMainContentSignal {
     UserData,
+    Conversation,
 }
-
-struct ContactsPanel {
-    content_show_signal: Option<ShowMainContentSignal>,
-    contacts: Vec<Contact>,
-    selected_contact: Option<usize>,
-    searched_contact: Option<String>,
-    contact_search_job_status: JobStatus,
-    socket: TcpStream,
-}
-
-impl ContactsPanel {
-    fn new(socket: TcpStream) -> Self {
-        Self {
-            content_show_signal: None,
-            contacts: Vec::new(),
-            selected_contact: None,
-            searched_contact: None,
-            socket,
-            contact_search_job_status: JobStatus::Idle,
-        }
-    }
-
-    fn show(&mut self, ctx: &egui::Context) -> Option<ShowMainContentSignal> {
-
-        let width = ctx.screen_rect().width();
-
-        egui::SidePanel::left("control_panel")
-        .exact_width(width / 3.0)
-        .show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                if self.searched_contact.is_none() {
-                    self.show_controls(ui);
-                }
-                else {
-                    self.show_search_bar(ui);
-                }
-            });
-
-            if let JobStatus::Failed(error_message) = &self.contact_search_job_status {
-                ui.label(error_message);
-            }
-            
-            ui.separator();
-            self.show_contacts(ui);
-        });
-
-        self.content_show_signal
-    }
-
-    fn show_controls(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Chat App");
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-
-            ui.menu_button(":", |ui| {
-                if self.show_menu_options(ui) {
-                    ui.close_menu();
-                }
-            });
-
-            if ui.button("+").clicked() {
-                self.searched_contact = Some(String::new())
-            }
-        });
-    }
-
-    fn show_menu_options(&mut self, ui: &mut egui::Ui) -> bool {
-        if ui.button("View Info").clicked() {
-            self.content_show_signal = Some(ShowMainContentSignal::UserData);
-            return true;
-        }
-        false
-    }
-
-    fn show_search_bar(&mut self, ui: &mut egui::Ui) {
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Max), |ui| {
-
-            let text_empty = self.searched_contact.as_ref()
-                .unwrap().is_empty();
-
-            let enable_crtls = !text_empty && self.contact_search_job_status != JobStatus::InProgress;
-
-            if ui.add_enabled(enable_crtls, egui::Button::new("Add")).clicked() {
-                let username = self.searched_contact.clone().unwrap();
-                let result = send_request_contact_cmd(&mut self.socket, username);
-                if result.is_err() {
-                    self.contact_search_job_status = JobStatus::Failed("Error while connecting to server".into());
-                }
-                else {
-                    self.contact_search_job_status = JobStatus::InProgress;
-                }
-            }
-        
-            if ui.add_enabled(enable_crtls, egui::Button::new("X")).clicked() {
-                self.searched_contact = None;
-                self.contact_search_job_status = JobStatus::Idle;
-                return;
-            }
-
-            let text_edit = 
-                    egui::TextEdit::singleline(self.searched_contact.as_mut().unwrap());
-
-            ui.add_sized(ui.available_size(), text_edit);
-        });
-    }
-
-    fn show_contacts(&self, ui: &mut egui::Ui) {
-        self.contacts
-            .iter()
-            .for_each(|contact| Self::show_contact(contact, ui));
-    }
-
-    fn show_contact(contact: &Contact, ui: &mut egui::Ui) {
-        ui.label(&contact.nickname);
-    }
-
-    fn add_contact(&mut self, contact: Contact) {
-        self.contacts.push(contact);
-        self.contact_search_job_status = JobStatus::Idle;
-        if let Some(buffer) = self.searched_contact.as_mut() {
-            buffer.clear();
-        }
-    }
-
-
-    fn contact_search_failed(&mut self, error_message: &str) {
-        println!("{error_message}");
-        self.contact_search_job_status = JobStatus::Failed(error_message.to_string());
-    }
-}
-
-
 
 pub struct ChatPage {
     socket: TcpStream,
     current_user: User,
     contacts_panel: ContactsPanel,
+    exit: bool,
+
+    messenger: Messenger,
 
     notifications_queue: Arc<NotificationsQueue>,
 }
 
 impl ChatPage {
     pub fn new(socket: TcpStream, current_user: User) -> Self {
-        let socket_clone = socket.try_clone().unwrap();
         let notifications_queue = Arc::new(NotificationsQueue::new());
 
         run_notification_listener_par(
@@ -166,19 +41,30 @@ impl ChatPage {
             socket.try_clone().unwrap()
         );
 
+        let contacts_panel = ContactsPanel::new(&current_user.username);
+
         Self {
             socket,
             current_user,
-            contacts_panel: ContactsPanel::new(socket_clone),
-            notifications_queue
+            contacts_panel,
+            notifications_queue,
+            exit: false,
+            messenger: Messenger::new(),
         }
     }
 
-    pub fn show(&mut self, ctx: &egui::Context) {
+    pub fn show(&mut self, ctx: &egui::Context) -> bool {
         self.handle_notifications();
-        if let Some(content_show_signal) = self.contacts_panel.show(ctx) {
+        self.contacts_panel.show(ctx);
+        if let Some(content_show_signal) = self.contacts_panel.main_content_signal() {
             self.show_central_panel(ctx, content_show_signal);
         }
+
+        if let Some(event) = self.contacts_panel.next_event() {
+            self.handle_contact_panel_event(event);
+        }
+
+        self.exit
     }
 
     fn show_central_panel(&mut self, ctx: &egui::Context, content_show_signal: ShowMainContentSignal) {
@@ -186,6 +72,7 @@ impl ChatPage {
         .show(ctx, |ui| {
             match content_show_signal {
                 ShowMainContentSignal::UserData => self.show_user_data(ui),
+                ShowMainContentSignal::Conversation => self.show_conversation(ui)
             }
         });
     }
@@ -205,6 +92,39 @@ impl ChatPage {
         });
     }
 
+    fn show_conversation(&mut self, ui: &mut egui::Ui) {
+        let selected_contact = self.contacts_panel.seletected_contact().unwrap();
+        let title = format!("Chat with {}", selected_contact.nickname);
+        ui.vertical_centered(|ui| ui.heading(title));
+        ui.separator();
+
+        let instance = self.messenger.get_messaging_instance(selected_contact.id).unwrap();
+
+        Self::show_chat_controls(ui, instance);
+        
+        egui::ScrollArea::vertical()
+        .auto_shrink(false)
+        .stick_to_bottom(true)
+        .show(ui, |ui| {
+            for _ in 0..100 {
+                ui.label("Hello world!");
+            }
+        });
+    }
+
+    fn show_chat_controls(ui: &mut egui::Ui, instance: &mut MessagingInstance) {
+        egui::TopBottomPanel::bottom("chat_crtls_panel")
+        .min_height(75.0)
+        .show_inside(ui, |ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+            let _ = ui.button("send");
+            let message_area = egui::TextEdit::multiline(&mut instance.text_to_send);
+            egui::ScrollArea::vertical()
+            .show(ui, |ui| ui.add_sized(ui.available_size(), message_area));
+        });
+        });
+    }
+
     fn handle_notifications(&mut self) {
         let result = self.notifications_queue.pop_notification();
         if result.is_none() {
@@ -220,6 +140,7 @@ impl ChatPage {
         match signal {
             NotificationHandlerSignal::ContactReceived(contact) => {
                 if contact.id != self.current_user.id {
+                    self.messenger.add_messsaging_instance(contact.id);
                     self.contacts_panel.add_contact(contact);
                 }
                 else {
@@ -231,7 +152,19 @@ impl ChatPage {
             
             _ => ()
         }
+    }
 
+    fn handle_contact_panel_event(&mut self, event: ContactPanelEvent) {
+        match event {
+            ContactPanelEvent::SendRequestContact(username) => {
+                if send_request_contact_cmd(&mut self.socket, username).is_err() {
+                    self.contacts_panel.contact_search_failed("Error while connecting to server");
+                }
+            }
+            ContactPanelEvent::DisconnectUser => {
+                self.exit = true;
+            }
+        }
     }
 }
 
